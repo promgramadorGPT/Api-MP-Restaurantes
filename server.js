@@ -1,7 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const { MercadoPagoConfig, Payment } = require("mercadopago");
-const admin = require("firebase-admin"); // 1. Importa o Firebase Admin
+const admin = require("firebase-admin");
 require("dotenv").config();
 
 const app = express();
@@ -11,17 +11,17 @@ app.use(express.json());
 // ==========================================
 // 🔥 INICIALIZAÇÃO DO FIREBASE ADMIN
 // ==========================================
-// Coloque o arquivo de chave do Firebase (firebase-key.json) na raiz do projeto no Render
 const serviceAccount = require("./firebase-key.json");
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
-  databaseURL: "https://SEU-PROJETO-default-rtdb.firebaseio.com" // 👈 Substitua com a URL do seu Firebase DB
+  // ⚠️ AJUSTE 1: URL real do seu Firebase Realtime Database
+  databaseURL: "https://app-delivery-frontend-da5d0-default-rtdb.firebaseio.com" 
 });
 
 const db = admin.database();
 
-// Mercado Pago Central (Para a rota antiga/geral)
+// Mercado Pago Central (Para a rota antiga/geral/Pix)
 const client = new MercadoPagoConfig({
   accessToken: process.env.MP_TOKEN
 });
@@ -60,7 +60,7 @@ app.post("/criar-pix", async (req, res) => {
 });
 
 // ==========================================
-// 💳 ROTA 2: Criar Pagamento com Cartão (Rota Antiga - Central)
+// 💳 ROTA 2: Criar Pagamento com Cartão (Central)
 // ==========================================
 app.post("/criar-pagamento-cartao", async (req, res) => {
   try {
@@ -99,7 +99,7 @@ app.post("/criar-pagamento-cartao", async (req, res) => {
 });
 
 // ==========================================
-// 🏬 ROTA 3: Criar Pagamento por Loja (NOVA - Descentralizada)
+// 🏬 ROTA 3: Criar Pagamento por Loja (Descentralizada)
 // ==========================================
 app.post("/criar-pagamento-loja", async (req, res) => {
   try {
@@ -143,6 +143,14 @@ app.post("/criar-pagamento-loja", async (req, res) => {
 
     console.log(`💳 Transação Loja ${lojaId} processada. ID: ${result.id} | Status: ${result.status}`);
 
+    // ⚠️ AJUSTE 2: Se o pagamento for aprovado, atualiza o status do pedido no Firebase
+    if (result.status === 'approved' && pedidoId) {
+      await db.ref(`pedidos/${pedidoId}`).update({
+        pagoStatus: 'Aprobado',
+        paymentIdMP: result.id
+      });
+    }
+
     res.json({
       paymentId: result.id,
       status: result.status, 
@@ -175,7 +183,8 @@ app.get("/status/:id", async (req, res) => {
   }
 });
 
-// Start server
-app.listen(3000, () => {
-  console.log("🔥 API rodando na porta 3000");
+// ⚠️ AJUSTE 3: Utiliza a porta atribuída pelo ambiente de hospedagem (Render)
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🔥 API rodando na porta ${PORT}`);
 });
