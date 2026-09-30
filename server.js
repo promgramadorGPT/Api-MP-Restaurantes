@@ -15,7 +15,6 @@ const serviceAccount = require("./firebase-key.json");
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
-  // ⚠️ AJUSTE 1: URL real do seu Firebase Realtime Database
   databaseURL: "https://app-delivery-frontend-da5d0-default-rtdb.firebaseio.com" 
 });
 
@@ -54,7 +53,7 @@ app.post("/criar-pix", async (req, res) => {
     });
 
   } catch (err) {
-    console.log(err);
+    console.error("Erro rota pix:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -92,8 +91,8 @@ app.post("/criar-pagamento-cartao", async (req, res) => {
     });
 
   } catch (err) {
-    console.log("Erro rota cartao:", err);
-    const errMsg = err.message || "Erro interno no processamento do cartão.";
+    console.error("Erro rota cartao central:", err.cause || err);
+    const errMsg = err.cause?.[0]?.description || err.message || "Erro interno no processamento do cartão.";
     res.status(500).json({ error: errMsg });
   }
 });
@@ -125,7 +124,19 @@ app.post("/criar-pagamento-loja", async (req, res) => {
     const clientLoja = new MercadoPagoConfig({ accessToken: lojaToken });
     const paymentLoja = new Payment(clientLoja);
 
-    // 3. Executa a transação (dinheiro vai 100% para a loja)
+    // 3. Monta o objeto payer garantindo e-mail e documento (CPF)
+    const payerData = {
+      email: email || payer?.email || "cliente@email.com",
+    };
+
+    if (payer?.identification?.number) {
+      payerData.identification = {
+        type: payer.identification.type || "CPF",
+        number: payer.identification.number
+      };
+    }
+
+    // 4. Executa a transação (dinheiro vai 100% para a loja)
     const result = await paymentLoja.create({
       body: {
         transaction_amount: Number(amount),
@@ -133,17 +144,13 @@ app.post("/criar-pagamento-loja", async (req, res) => {
         description: `Pedido #${pedidoId || 'encomenda'}`,
         installments: Number(installments || 1),
         payment_method_id: paymentMethodId,
-        payer: {
-          email: email || "cliente@email.com",
-          identification: payer?.identification || undefined, 
-          first_name: payer?.first_name || undefined
-        }
+        payer: payerData
       }
     });
 
     console.log(`💳 Transação Loja ${lojaId} processada. ID: ${result.id} | Status: ${result.status}`);
 
-    // ⚠️ AJUSTE 2: Se o pagamento for aprovado, atualiza o status do pedido no Firebase
+    // Atualiza status no Firebase se aprovado
     if (result.status === 'approved' && pedidoId) {
       await db.ref(`pedidos/${pedidoId}`).update({
         pagoStatus: 'Aprobado',
@@ -158,9 +165,11 @@ app.post("/criar-pagamento-loja", async (req, res) => {
     });
 
   } catch (err) {
-    console.log("Erro rota loja:", err);
-    const errMsg = err.message || "Erro interno no processamento do cartão da loja.";
-    res.status(500).json({ error: errMsg });
+    // Captura detalhada dos erros da API do Mercado Pago
+    console.error("❌ Erro detalhado no Mercado Pago:", err.cause || err);
+
+    const detalheErro = err.cause?.[0]?.description || err.message || "Erro interno no processamento do cartão da loja.";
+    res.status(500).json({ error: detalheErro, statusDetail: err.cause?.[0]?.code });
   }
 });
 
@@ -178,12 +187,14 @@ app.get("/status/:id", async (req, res) => {
     });
 
   } catch (err) {
-    console.log(err);
+    console.error("Erro rota status:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ⚠️ AJUSTE 3: Utiliza a porta atribuída pelo ambiente de hospedagem (Render)
+// ==========================================
+// 🚀 INICIALIZAÇÃO DO SERVIDOR
+// ==========================================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🔥 API rodando na porta ${PORT}`);
