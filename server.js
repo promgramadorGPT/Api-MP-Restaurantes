@@ -19,7 +19,7 @@ app.use(cors({
     return cb(new Error('Origen no permitido.'));
   },
   methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-meli-session-id']
 }));
 app.use(express.json({ limit: '256kb' }));
 
@@ -267,6 +267,8 @@ app.post('/criar-pagamento-loja', requireFirebaseUser, async (req, res) => {
       };
     }
 
+    const deviceSessionId = String(req.headers['x-meli-session-id'] || '').trim().slice(0, 200);
+
     const body = {
       transaction_amount: total,
       token,
@@ -278,9 +280,12 @@ app.post('/criar-pagamento-loja', requireFirebaseUser, async (req, res) => {
 
     if (process.env.MP_WEBHOOK_URL) body.notification_url = process.env.MP_WEBHOOK_URL;
 
+    const requestOptions = { idempotencyKey: attempt.idempotencyKey };
+    if (deviceSessionId) requestOptions.headers = { 'X-meli-session-id': deviceSessionId };
+
     const result = await paymentLoja.create({
       body,
-      requestOptions: { idempotencyKey: attempt.idempotencyKey }
+      requestOptions
     });
 
     await savePaymentRecord(pedidoKey, {
