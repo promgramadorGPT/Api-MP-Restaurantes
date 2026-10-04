@@ -382,6 +382,119 @@ app.post('/webhook/mercadopago', async (req, res) => {
 });
 
 // ==========================================
+// PIX POR LOJA — PRODUÇÃO
+// Usa o Access Token da própria loja, igual ao cartão.
+// ==========================================
+app.post('/criar-pix-loja', requireFirebaseUser, async (req, res) => {
+  try {
+    const { pedidoKey, pedidoId, lojaId, payer, email } = req.body || {};
+
+    if (!lojaId || typeof lojaId !== 'string') return fail(res, 400, 'lojaId inválido.');
+    if (!pedidoKey || typeof pedidoKey !== 'string') return fail(res, 400, 'pedidoKey é obrigatório.');
+
+    const pedido = await getOrderForUser(pedidoKey, req.user.uid, lojaId);
+    if (!pedido) return fail(res, 404, 'Pedido não encontrado.');
+
+    if (pedido.status !== 'Pendiente') return fail(res, 409, 'Este pedido não está disponível para pagamento.');
+    const pedidoPagoStatus = normalizeStatus(pedido.paymentStatusMP || pedido.pagoStatus);
+    if (pedido.paymentIdMP && !['rejected', 'cancelled', 'refunded', 'charged_back'].includes(pedidoPagoStatus)) {
+      const saved = await db.ref(`pagamentos/${pedido.paymentIdMP}`).once('value');
+      const previous = saved.val();
+      return ok(res, {
+        paymentId: pedido.paymentIdMP,
+        status: pedido.paymentStatusMP || 'approved',
+        statusDetail: 'already_processed',
+        qrCode: previous?.qrCode || null,
+        qrCodeBase64: previous?.qrCodeBase64 || null
+      });
+    }
+
+    const total = Number(pedido.total);
+    if (!validPositiveNumber(total)) return fail(res, 400, 'Total do pedido inválido.');
+
+    const loja = await getStore(lojaId);
+    if (!loja) return fail(res, 404, 'Loja não encontrada.');
+    if (loja.activo === false || loja.activa === false) return fail(res, 409, 'Esta loja no está disponible.');
+
+    const lojaToken = await getSellerToken(lojaId);
+    if (!lojaToken) return fail(res, 409, 'Esta tienda aún no tiene una cuenta de Mercado Pago configurada.');
+
+    const attempt = await createOrReusePaymentAttempt(pedidoKey, lojaId);
+    if (attempt.paymentIdMP) {
+      const saved = await db.ref(`pagamentos/${attempt.paymentIdMP}`).once('value');
+      const previous = saved.val();
+      return ok(res, {
+        paymentId: attempt.paymentIdMP,
+        status: attempt.status,
+        statusDetail: attempt.statusDetail || 'already_created',
+        qrCode: previous?.qrCode || null,
+        qrCodeBase64: previous?.qrCodeBase64 || null
+      });
+    }
+
+    const paymentLoja = new Payment(new MercadoPagoConfig({ accessToken: lojaToken }));
+    const payerEmail = email || payer?.email || pedido?.cliente?.email;
+    if (!payerEmail) return fail(res, 400, 'E-mail do cliente é obrigatório para o PIX.');
+
+    const payerData = { email: String(payerEmail).trim() };
+    if (payer?.identification?.number) {
+      payerData.identification = {
+        type: payer.identification.type || 'CPF',
+        number: String(payer.identification.number)
+      };
+    } else if (pedido?.cliente?.documento) {
+      payerData.identification = {
+        type: pedido.cliente.documentoTipo || 'CPF',
+        number: String(pedido.cliente.documento)
+      };
+    }
+
+    const body = {
+      transaction_amount: total,
+      description: `Pedido #${pedido.numeroPedido || pedidoId || pedidoKey}`.slice(0, 150),
+      payment_method_id: 'pix',
+      payer: payerData
+    };
+
+    if (process.env.MP_WEBHOOK_URL) body.notification_url = process.env.MP_WEBHOOK_URL;
+
+    const result = await paymentLoja.create({
+      body,
+      requestOptions: { idempotencyKey: attempt.idempotencyKey }
+    });
+
+    const pix = result.point_of_interaction?.transaction_data || {};
+    await savePaymentRecord(pedidoKey, {
+      lojaId,
+      id: result.id,
+      status: result.status,
+      status_detail: result.status_detail,
+      transaction_amount: result.transaction_amount,
+      qrCode: pix.qr_code || null,
+      qrCodeBase64: pix.qr_code_base64 || null
+    });
+    await updateOrderPayment(pedidoKey, result);
+
+    console.log(`🟩 PIX loja ${lojaId} | pedido ${pedidoKey} | MP ${result.id} | ${result.status}`);
+
+    return ok(res, {
+      paymentId: result.id,
+      status: result.status,
+      statusDetail: result.status_detail,
+      qrCode: pix.qr_code || null,
+      qrCodeBase64: pix.qr_code_base64 || null,
+      ticketUrl: pix.ticket_url || null
+    });
+  } catch (err) {
+    console.error('Erro PIX por loja:', err.cause || err);
+    const cause = err.cause?.[0];
+    return fail(res, 502, cause?.description || err.message || 'Erro interno no processamento do PIX.', {
+      statusDetail: cause?.code || undefined
+    });
+  }
+});
+
+// ==========================================
 // LEGADO: PIX/CARTÃO CENTRAL
 // Mantidos somente para compatibilidade. Não usar no checkout por loja.
 // ==========================================
